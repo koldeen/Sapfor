@@ -425,8 +425,16 @@ void transferCommons(set<FuncInfo*>& allForChange, map <FuncInfo*, map<string, v
             commList->setSymbol(commSymb);
             commList->setLhs(res);
 
-            auto lastDecl = curFunc->funcPointer->GetOriginal()->lastDeclaration();
-            lastDecl->insertStmtAfter(*commStat, *(lastDecl->controlParent()));
+            SgStatement* firstExDec, * hedr = curFunc->funcPointer->GetOriginal();
+            for (SgStatement* start = hedr->lexNext(), *end = hedr->lastNodeOfStmt(); start != end; start = start->lexNext())
+            {
+                if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(hedr->fileName(), start->fileName())) {
+                    firstExDec = start;
+                    break;
+                }
+            }
+            commStat->setlineNumber(firstExDec->lineNumber());
+            firstExDec->insertStmtBefore(*commStat, *(hedr));
 
             for (auto& var : varsToDeclare)
             {
@@ -439,10 +447,9 @@ void transferCommons(set<FuncInfo*>& allForChange, map <FuncInfo*, map<string, v
                     if (e = decl->expr(i))
                         decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
                 }
-                SgStatement* lastDecl = curFunc->funcPointer->GetOriginal()->lastDeclaration()->lexNext();
-                decl->setlineNumber(lastDecl->lineNumber());
-                decl->setFileName(lastDecl->fileName());
-                lastDecl->insertStmtBefore(*decl, *(curFunc->funcPointer->GetOriginal()->lastDeclaration()->controlParent()));
+                decl->setlineNumber(firstExDec->lineNumber());
+                decl->setFileName(hedr->fileName());
+                commStat->insertStmtAfter(*decl, *(hedr));
             }
         }
 
@@ -495,11 +502,18 @@ void transferCommons(set<FuncInfo*>& allForChange, map <FuncInfo*, map<string, v
                         if (e = decl->expr(i))
                             decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
                     }
+                    SgStatement* firstExDec;
+                    for (SgStatement* start = hedr->lexNext(), *end = hedr->lastNodeOfStmt(); start != end; start = start->lexNext())
+                    {
 
-                    SgStatement* lastDecl = curFunc->funcPointer->GetOriginal()->lastDeclaration()->lexNext();
-                    decl->setlineNumber(lastDecl->lineNumber());
-                    decl->setFileName(lastDecl->fileName());
-                    lastDecl->insertStmtBefore(*decl, *(curFunc->funcPointer->GetOriginal()->lastDeclaration()->controlParent()));
+                        if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(hedr->fileName(),start->fileName())) {
+                            firstExDec = start;
+                            break;
+                        }
+                    }
+                    decl->setlineNumber(firstExDec->lineNumber());
+                    decl->setFileName(hedr->fileName());
+                    firstExDec->insertStmtBefore(*decl, *(hedr));
                 }
             }
         }
@@ -585,7 +599,6 @@ void commonTransfer(const map<string, vector<FuncInfo*>>& allFuncInfo, const map
 
         if (func->commonBlocks.size() > 0) 
         {
-            //printf(">%s\n", func->funcName.c_str());
             map<string, vector<int>> commonVarsUsed;
             set<string> usedVars;
             for (SgStatement* start = st->lastDeclaration()->lexNext(), *end = st->lastNodeOfStmt(); start != end; start = start->lexNext()) 
@@ -708,10 +721,17 @@ static void transferSave(map<FuncInfo*, set<FuncInfo*>>& funcAddedVarsFuncs, vec
                     if (e = decl->expr(i))
                         decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
                 }
-                SgStatement* lastDecl = st->lastDeclaration()->lexNext();
-                decl->setlineNumber(lastDecl->lineNumber());
-                decl->setFileName(lastDecl->fileName());
-                lastDecl->insertStmtBefore(*decl, *(curFunc->funcPointer->GetOriginal()->lastDeclaration()->controlParent()));
+                SgStatement* firstExDec;
+                for (SgStatement* start = st->lexNext(), *end = st->lastNodeOfStmt(); start != end; start = start->lexNext())
+                {
+                    if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(st->fileName(), start->fileName())) {
+                        firstExDec = start;
+                        break;
+                    }
+                }
+                decl->setlineNumber(firstExDec->lineNumber());
+                decl->setFileName(st->fileName());
+                firstExDec->insertStmtBefore(*decl, *(st));
             }
         }
 
@@ -720,7 +740,14 @@ static void transferSave(map<FuncInfo*, set<FuncInfo*>>& funcAddedVarsFuncs, vec
     }
     else
     {
-        SgStatement* lastDecl = curFunc->funcPointer->GetOriginal()->lastDeclaration()->lexNext();
+        SgStatement* firstExDec, *hedr = curFunc->funcPointer->GetOriginal();
+        for (SgStatement* start = hedr->lexNext(), *end = hedr->lastNodeOfStmt(); start != end; start = start->lexNext())
+        {
+            if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(hedr->fileName(), start->fileName())) {
+                firstExDec = start;
+                break;
+            }
+        }
         for (auto& var : varsToTransfer)
         {
             vector<SgSymbol*> varVec = vector<SgSymbol*>();
@@ -733,13 +760,13 @@ static void transferSave(map<FuncInfo*, set<FuncInfo*>>& funcAddedVarsFuncs, vec
                     decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
             }
 
-            decl->setlineNumber(lastDecl->lineNumber() - 1);
-            decl->setFileName(lastDecl->fileName());
-            lastDecl->insertStmtBefore(*decl, *(lastDecl->controlParent()));
+            decl->setlineNumber(firstExDec->lineNumber());
+            decl->setFileName(hedr->fileName());
+            firstExDec->insertStmtBefore(*decl, *(hedr));
         }
 
         for (auto& data : dataToTransfer)
-            lastDecl->addComment(data.c_str());
+            firstExDec->addComment(data.c_str());
     }
 }
 
@@ -851,19 +878,31 @@ void saveTransfer(const map<string, vector<FuncInfo*>>& allFuncInfo)
                 }
 
                 SgExprListExp* attrsNoSave = new SgExprListExp();
-                for (int i = 0; i < vst->numberOfAttributes(); i++)
+                bool needChange = false;
+                for (int i = 0; i < vst->numberOfAttributes(); i++) 
+                {
                     if (vst->attribute(i)->variant() != SAVE_OP)
+                    {
                         attrsNoSave->append(vst->attribute(i)->copy());
-
-                if (!attrsNoSave->length())
-                {
-                    SgVarDeclStmt* newVst = new SgVarDeclStmt(vst->varList()->copy(), *attrsNoSave, vst->type()->copy());
-                    vst->replaceWithStmt(*newVst);
+                    } 
+                    else {
+                        needChange = true;
+                    }
                 }
-                else
-                {
-                    SgVarDeclStmt* newVst = new SgVarDeclStmt(vst->varList()->copy(), vst->type()->copy());
+                if (needChange) {
+                    SgVarDeclStmt* newVst;
+                    if (!attrsNoSave->length())
+                    {
+                        newVst = new SgVarDeclStmt(vst->varList()->copy(), *attrsNoSave, vst->type()->copy());
+                    }
+                    else
+                    {
+                        newVst = new SgVarDeclStmt(vst->varList()->copy(), vst->type()->copy());                  
+                    }
+                    newVst->setlineNumber(vst->lineNumber());
+                    newVst->setComments(vst->comments());
                     vst->replaceWithStmt(*newVst);
+                    newVst->unparsestdout();
                 }
             }
             start = next;
@@ -1043,10 +1082,24 @@ static void transferModule(map<FuncInfo*, set<SgSymbol*>>& funcAddedVarsMods, se
             /*TODO:: add some other*/
             if (var->attributes() && ALLOCATABLE_BIT)
             {
-                SgAttributeExp* a = new SgAttributeExp(ALLOCATABLE_OP);
-                SgExprListExp* l = new SgExprListExp();
-                l->setLhs(a);
-                ((SgVarDeclStmt*)decl)->addAttributeExpression(a);
+                bool isAuto = false;
+                if (decl->expr(0)->lhs()->variant() == ARRAY_REF && decl->expr(0)->lhs()->lhs())
+                {
+                    for (SgExpression* e = decl->expr(0)->lhs()->lhs(); e; e = e->rhs())
+                    {
+                        if (e->lhs()->variant() == DDOT && (e->lhs()->rhs() || e->lhs()->lhs()))
+                        {
+                            isAuto = true;
+                            break;
+                        }                        
+                    }
+                }
+                if (!isAuto) {
+                    SgAttributeExp* a = new SgAttributeExp(ALLOCATABLE_OP);
+                    SgExprListExp* l = new SgExprListExp();
+                    l->setLhs(a);
+                    ((SgVarDeclStmt*)decl)->addAttributeExpression(a);
+                }                
             }
 
             for (int i = 0; i < 3; i++)
@@ -1058,10 +1111,19 @@ static void transferModule(map<FuncInfo*, set<SgSymbol*>>& funcAddedVarsMods, se
                 }
             }
 
-            SgStatement* lastDecl = st->lastDeclaration()->lexNext();
-            decl->setlineNumber(lastDecl->lineNumber() - 1);
-            decl->setFileName(lastDecl->fileName());
-            lastDecl->insertStmtBefore(*decl, *st);
+            SgStatement* firstExDec;
+            for (SgStatement* start = st->lexNext(), *end = st->lastNodeOfStmt(); start != end; start = start->lexNext())
+            {
+
+                if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(st->fileName(), start->fileName())) {
+                    firstExDec = start;
+                    break;
+                }
+            }
+            decl->setlineNumber(firstExDec->lineNumber());
+            decl->setFileName(st->fileName());
+            firstExDec->insertStmtBefore(*decl, *(st));
+        
         }
 
         for (auto& callFunc : curFunc->callsTo)
@@ -1145,19 +1207,53 @@ void moduleTransfer(const map<string, vector<FuncInfo*>>& allFuncInfo)
                 break;
 
             SgStatement* next = start->lexNext();
-            if (isSgExecutableStatement(start))
+            if (start->variant() == USE_STMT) 
+            {
+                start->unparsestdout();
+                SgExpression* onlyE = start->expr(0);
+                if (onlyE)
+                {
+                    SgExprListExp* renameL = NULL;
+                    for (SgExpression* ex = onlyE->lhs(); ex; ex = ex->rhs())
+                    {
+                        if (ex->lhs()->variant() == RENAME_NODE)
+                        {
+                            SgSymbol* left = NULL, * right = NULL;
+                            if (ex->lhs()->lhs()->symbol())
+                                left = ex->lhs()->lhs()->symbol();
+                            if (ex->lhs()->rhs() && ex->lhs()->rhs()->symbol())
+                                right = ex->lhs()->rhs()->symbol();
+                            if (!(right && (right->variant() == VARIABLE_NAME) || left && (left->variant() == VARIABLE_NAME)))
+                            {
+                                SgExprListExp* el = new SgExprListExp();
+                                el->setLhs(ex->lhs());
+                                el->setRhs(renameL);
+                                renameL = el;
+                            }
+                        }
+                    }
+                    if (renameL) {
+                        onlyE->setLhs(renameL);
+                    }
+                    else
+                    {
+                        start->deleteStmt();
+                    }
+                }
+            }
+            if (isSgExecutableStatement(start)|| isSgDeclarationStatement(start))
                 for (int i = 0; i < 3; i++)
                     fillUsedVars(usedVars, start->expr(i));
             
-            if (start->variant() == IMPL_DECL)
-                start->deleteStmt();
+          //  if (start->variant() == IMPL_DECL)
+            //    start->deleteStmt();
             start = next;
         }
 
         sl = lst->lexNext() ? lst->lexNext()->symbol() : NULL;
         for (s = st->symbol(); s != sl && s != NULL; s = s->next())
         {
-            if (OriginalSymbol(s)->scope()->variant() == MODULE_STMT && s->variant() == VARIABLE_NAME && usedVars.count(s))
+            if (OriginalSymbol(s)->scope()->variant() == MODULE_STMT && (s->variant() == VARIABLE_NAME) && usedVars.count(s))
             {
                 string newName = "m_" + string(OriginalSymbol(s)->scope()->symbol()->identifier()) + "_" + OriginalSymbol(s)->identifier();
                 locVars[s->identifier()] = newName;
