@@ -1210,7 +1210,7 @@ static void transferModule(map<FuncInfo*, set<SgSymbol*>>& funcAddedVarsMods, se
                 {
                     for (SgExpression* e = decl->expr(0)->lhs()->lhs(); e; e = e->rhs())
                     {
-                        if (e->lhs()->variant() == DDOT && (e->lhs()->rhs() || e->lhs()->lhs()))
+                        if (e->lhs()->variant() == DDOT && (e->lhs()->rhs() || e->lhs()->lhs()) || e->lhs()->variant() != DDOT)
                         {
                             isAuto = true;
                             break;
