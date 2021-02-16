@@ -902,7 +902,6 @@ void saveTransfer(const map<string, vector<FuncInfo*>>& allFuncInfo)
                     newVst->setlineNumber(vst->lineNumber());
                     newVst->setComments(vst->comments());
                     vst->replaceWithStmt(*newVst);
-                    newVst->unparsestdout();
                 }
             }
             start = next;
@@ -978,9 +977,132 @@ static string makeName(SgSymbol* var, map<SgSymbol*, set< SgSymbol*>>& modVarsTo
     return name;
 }
 
+static string getInterfaceBlock(SgStatement* func, const FuncParam& pars)
+{
+    string oldFile = current_file->filename();
+    if (!func->switchToFile())
+        printInternalError(convertFileName(__FILE__).c_str(), __LINE__);
+
+    auto copy = duplicateProcedure(func, "", false, false, false, true);
+
+    const set<string> ident(pars.identificators.begin(), pars.identificators.end());
+
+    //remove all exec
+    SgStatement* st = copy->lexNext();
+    SgStatement* last = copy->lastNodeOfStmt();
+    vector<SgStatement*> toExtract;
+    while (st != last)
+    {
+        if (isDVM_stat(st) || isSPF_stat(st))
+        {
+            if (st->variant() != ACC_ROUTINE_DIR)
+            {
+                SgStatement* next = st->lexNext();
+                st->extractStmt();
+                st = next;
+            }
+            else
+                st = st->lexNext();
+        }
+        else if (isSgExecutableStatement(st))
+        {
+            SgStatement* next = st->lastNodeOfStmt();
+            if (next != last)
+                next = next->lexNext();
+            toExtract.push_back(st);
+            st = next;
+        }
+        else
+            st = st->lexNext();
+    }
+
+    //remove unused declarations
+    st = copy->lexNext();
+    while (st != last)
+    {
+        if (st->variant() == VAR_DECL
+            || st->variant() == VAR_DECL_90
+            || st->variant() == DIM_STAT
+            || st->variant() == INTENT_STMT)
+        {
+            SgExpression* list = st->expr(0);
+            vector<SgExpression*> newList;
+            while (list)
+            {
+                if (ident.find(list->lhs()->symbol()->identifier()) != ident.end())
+                    newList.push_back(list->lhs());
+                list = list->rhs();
+            }
+
+            if (newList.size() == 0)
+            {
+                SgStatement* next = st->lexNext();
+                toExtract.push_back(st);
+                st = next;
+                continue;
+            }
+            else
+                st->setExpression(0, makeExprList(newList));
+        }
+        else
+            toExtract.push_back(st);
+
+        if (st->variant() == CONTAINS_STMT)
+            break;
+        st = st->lexNext();
+    }
+
+    for (auto& elem : toExtract)
+        elem->extractStmt();
+
+    string retVal = copy->unparse();
+
+    if (SgFile::switchToFile(oldFile) == -1)
+        printInternalError(convertFileName(__FILE__).c_str(), __LINE__);
+
+    return retVal;
+}
+
+static void insertInterface(SgStatement* func, const string& iface)
+{
+    string oldFile = current_file->filename();
+    if (!func->switchToFile())
+        printInternalError(convertFileName(__FILE__).c_str(), __LINE__);
+
+    SgStatement* st = func->lexNext();
+    SgStatement* last = func->lastNodeOfStmt();
+    while (st != last)
+    {
+        if (isSgExecutableStatement(st))
+            break;
+        st = st->lexNext();
+    }
+    SgStatement* ifaceBlock = new SgStatement(INTERFACE_STMT);
+    addControlEndToStmt(ifaceBlock->thebif);
+
+    ifaceBlock->setlineNumber(st->lineNumber());
+    ifaceBlock->setFileName(st->fileName());
+    st->insertStmtBefore(*ifaceBlock, *st->controlParent());
+    ifaceBlock->lastNodeOfStmt()->addComment(iface.c_str());
+
+    if (SgFile::switchToFile(oldFile) == -1)
+        printInternalError(convertFileName(__FILE__).c_str(), __LINE__);
+}
+
+void createInterfaceBlockForToCalls(FuncInfo* func)
+{
+    for (auto& callTo : func->callsTo)
+    {
+        if (callTo->interfaceBlocks.find(func->funcName) == callTo->interfaceBlocks.end())
+        {
+            callTo->interfaceBlocks[func->funcName] = func;
+            insertInterface(callTo->funcPointer, getInterfaceBlock(func->funcPointer->GetOriginal(), func->funcParams));
+        }
+    }
+}
 
 static void transferModule(map<FuncInfo*, set<SgSymbol*>>& funcAddedVarsMods, set<FuncInfo*>& allForChange, 
-                           vector<SgSymbol*>& varsToTransfer, FuncInfo* curFunc, FuncInfo* precFunc)
+                           vector<SgSymbol*>& varsToTransfer, FuncInfo* curFunc, FuncInfo* precFunc, set<FuncInfo*>& funcForInterfaceAdd)
 {
     SgStatement* st = curFunc->funcPointer->GetOriginal();
     map<SgSymbol*, set< SgSymbol*>> modVarsToAdd;
@@ -1073,6 +1195,7 @@ static void transferModule(map<FuncInfo*, set<SgSymbol*>>& funcAddedVarsMods, se
     {
         for (auto& var : nextVarsToTransfer)
         {
+            curFunc->funcParams.identificators.push_back(var->identifier());
             ((SgProcHedrStmt*)(st))->AddArg(*new SgVarRefExp(var->copy()));
             st->lexNext()->deleteStmt();
             vector<SgSymbol*> varVec = vector<SgSymbol*>();
@@ -1095,6 +1218,7 @@ static void transferModule(map<FuncInfo*, set<SgSymbol*>>& funcAddedVarsMods, se
                     }
                 }
                 if (!isAuto) {
+                    funcForInterfaceAdd.insert(curFunc);
                     SgAttributeExp* a = new SgAttributeExp(ALLOCATABLE_OP);
                     SgExprListExp* l = new SgExprListExp();
                     l->setLhs(a);
@@ -1127,7 +1251,7 @@ static void transferModule(map<FuncInfo*, set<SgSymbol*>>& funcAddedVarsMods, se
         }
 
         for (auto& callFunc : curFunc->callsTo)
-            transferModule(funcAddedVarsMods, allForChange, nextVarsToTransfer, callFunc, curFunc);
+            transferModule(funcAddedVarsMods, allForChange, nextVarsToTransfer, callFunc, curFunc, funcForInterfaceAdd);
     }
     else
     {
@@ -1173,6 +1297,7 @@ void moduleTransfer(const map<string, vector<FuncInfo*>>& allFuncInfo)
     set<FuncInfo*> allForChange;
     map<string, vector<FuncInfo*>> funcsName;
     map<FuncInfo*, set<SgSymbol*>> funcAddedVarsMods;
+    set<FuncInfo*> funcForInterfaceAdd;
     for (auto& byfile : allFuncInfo)
     {
         for (auto& func : byfile.second)
@@ -1209,7 +1334,6 @@ void moduleTransfer(const map<string, vector<FuncInfo*>>& allFuncInfo)
             SgStatement* next = start->lexNext();
             if (start->variant() == USE_STMT) 
             {
-                start->unparsestdout();
                 SgExpression* onlyE = start->expr(0);
                 if (onlyE)
                 {
@@ -1261,6 +1385,10 @@ void moduleTransfer(const map<string, vector<FuncInfo*>>& allFuncInfo)
                 varsToTransfer.push_back(s);
             }
         }
-        transferModule(funcAddedVarsMods, allForChange, varsToTransfer, func, func);
+        transferModule(funcAddedVarsMods, allForChange, varsToTransfer, func, func, funcForInterfaceAdd);
+    }
+    for (auto& func : funcForInterfaceAdd)
+    {
+        createInterfaceBlockForToCalls(func);
     }
 }
