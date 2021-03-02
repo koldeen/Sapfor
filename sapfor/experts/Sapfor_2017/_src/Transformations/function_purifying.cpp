@@ -303,6 +303,37 @@ static void transferVarToArg(const map<string, vector<int>>& commonVarsUsed, con
     }
 }
 
+void findInterfaces(FuncInfo* func, std::vector<SgStatement*>& ifaces)
+{
+    for (auto& callFunc : func->callsTo)
+    {
+        SgStatement* iface = NULL;
+        if (callFunc->interfaceBlocks.find(func->funcName) != callFunc->interfaceBlocks.end())
+        {
+            SgStatement* hedr = callFunc->funcPointer->GetOriginal();
+            for (SgStatement* start = hedr->lexNext(), *end = hedr->lastNodeOfStmt(); start != end; start = start->lexNext())
+            {
+                if (start->variant() == INTERFACE_STMT)
+                {
+                    for (int i = 0; i < start->numberOfChildrenList1(); i++)
+                    {
+                        if ((isSgProgHedrStmt(start->childList1(i))) && !strcmp(start->childList1(i)->symbol()->identifier(), func->funcName.c_str()))
+                        {
+                            iface = start->childList1(i);
+                            break;
+                        }
+                    }
+                }
+                if (iface)
+                {
+                    ifaces.push_back(iface);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 void transferCommons(set<FuncInfo*>& allForChange, map <FuncInfo*, map<string, vector<int>>>& funcCommons, map<string, vector<int>>& commonVarsUsed,
                      FuncInfo* curFunc, FuncInfo* precFunc, const map<string, CommonBlock>& commonBlocks, map <FuncInfo*, set<string>>& funcCommonDeclared)
 {
@@ -358,6 +389,10 @@ void transferCommons(set<FuncInfo*>& allForChange, map <FuncInfo*, map<string, v
             }
         }
     }
+
+    std::vector<SgStatement*> ifaces;
+    ifaces.push_back(curFunc->funcPointer->GetOriginal());
+    findInterfaces(curFunc, ifaces);
 
     for (auto& common : nextCommonVarsUsed)
     {
@@ -456,71 +491,75 @@ void transferCommons(set<FuncInfo*>& allForChange, map <FuncInfo*, map<string, v
         //parametrs add
         if (allForChange.count(curFunc))
         {
-            for (auto& posVar : common.second)
-            {
-                Variable var = commonBlocks.find(common.first)->second.getGroupedVars().find(posVar)->second[0];
-                string name;
-                if ((int)(string(var.getSymbol()->identifier()).find("c_" + common.first + "_")) < 0)
-                    name = "c_" + common.first + "_" + var.getSymbol()->identifier();
-                else
-                    name = var.getSymbol()->identifier();
-
-                SgSymbol* s = new SgSymbol(var.getSymbol()->variant(), name.c_str(), var.getSymbol()->type(), curFunc->funcPointer);
-                
-                SgStatement* hedr = curFunc->funcPointer->GetOriginal();
-                SgExpression* result = hedr->expr(0) == NULL ? NULL : hedr->expr(0)->copyPtr();
-
-                if (isSgFuncHedrStmt(hedr))
-                    isSgFuncHedrStmt(hedr)->AddArg(*new SgVarRefExp(s));
-                else if (isSgProcHedrStmt(hedr))
-                    isSgProcHedrStmt(hedr)->AddArg(*new SgVarRefExp(s));
-                else
-                    printInternalError(convertFileName(__FILE__).c_str(), __LINE__);
-
-                if (result == NULL)
+            for (int i = 0; i < ifaces.size(); i++) {
+                for (auto& posVar : common.second)
                 {
-                    if (hedr->expr(0) != NULL)
-                        hedr->setExpression(0, NULL);
-                }
-                else
-                {
-                    if (hedr->expr(0) != NULL)
-                        hedr->setExpression(0, result);
-                    else if (string(hedr->expr(0)->unparse()) != result->unparse())
-                        hedr->setExpression(0, result);
-                }
+                    Variable var = commonBlocks.find(common.first)->second.getGroupedVars().find(posVar)->second[0];
+                    string name;
+                    if ((int)(string(var.getSymbol()->identifier()).find("c_" + common.first + "_")) < 0)
+                        name = "c_" + common.first + "_" + var.getSymbol()->identifier();
+                    else
+                        name = var.getSymbol()->identifier();
 
-                curFunc->funcPointer->GetOriginal()->lexNext()->deleteStmt();
-                if (!funcCommonDeclared[curFunc].count(common.first))
-                {
-                    vector<SgSymbol*> varVec = vector<SgSymbol*>();
-                    varVec.push_back(s);
-                    SgStatement* decl = makeDeclaration(NULL, varVec);
-                    for (int i = 0; i < 3; i++)
+                    SgSymbol* s = new SgSymbol(var.getSymbol()->variant(), name.c_str(), var.getSymbol()->type(), ifaces[i]);
+
+                    SgStatement* hedr = ifaces[i];
+                    SgExpression* result = hedr->expr(0) == NULL ? NULL : hedr->expr(0)->copyPtr();
+
+                    if (isSgFuncHedrStmt(hedr))
+                        isSgFuncHedrStmt(hedr)->AddArg(*new SgVarRefExp(s));
+                    else if (isSgProcHedrStmt(hedr))
+                        isSgProcHedrStmt(hedr)->AddArg(*new SgVarRefExp(s));
+                    else
+                        printInternalError(convertFileName(__FILE__).c_str(), __LINE__);
+
+                    if (result == NULL)
                     {
-                        SgExpression* e;
-                        if (e = decl->expr(i))
-                            decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
+                        if (hedr->expr(0) != NULL)
+                            hedr->setExpression(0, NULL);
                     }
-                    SgStatement* firstExDec;
-                    for (SgStatement* start = hedr->lexNext(), *end = hedr->lastNodeOfStmt(); start != end; start = start->lexNext())
+                    else
                     {
+                        if (hedr->expr(0) != NULL)
+                            hedr->setExpression(0, result);
+                        else if (string(hedr->expr(0)->unparse()) != result->unparse())
+                            hedr->setExpression(0, result);
+                    }
 
-                        if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(hedr->fileName(),start->fileName())) {
-                            firstExDec = start;
-                            break;
+                    curFunc->funcPointer->GetOriginal()->lexNext()->deleteStmt();
+                    if (!funcCommonDeclared[curFunc].count(common.first) || i!=0)
+                    {
+                        vector<SgSymbol*> varVec = vector<SgSymbol*>();
+                        varVec.push_back(s);
+                        SgStatement* decl = makeDeclaration(NULL, varVec);
+                        for (int i = 0; i < 3; i++)
+                        {
+                            SgExpression* e;
+                            if (e = decl->expr(i))
+                                decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
                         }
+                        SgStatement* firstExDec;
+                        for (SgStatement* start = hedr->lexNext(), *end = hedr->lastNodeOfStmt(); start != end; start = start->lexNext())
+                        {
+
+                            if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(hedr->fileName(), start->fileName())) {
+                                firstExDec = start;
+                                break;
+                            }
+                        }
+                        decl->setlineNumber(firstExDec->lineNumber());
+                        decl->setFileName(hedr->fileName());
+                        firstExDec->insertStmtBefore(*decl, *(hedr));
                     }
-                    decl->setlineNumber(firstExDec->lineNumber());
-                    decl->setFileName(hedr->fileName());
-                    firstExDec->insertStmtBefore(*decl, *(hedr));
                 }
             }
         }
     }
 
     for (auto& callFunc : curFunc->callsTo)
-        transferCommons(allForChange, funcCommons, nextCommonVarsUsed, callFunc, curFunc, commonBlocks, funcCommonDeclared);    
+    {
+        transferCommons(allForChange, funcCommons, nextCommonVarsUsed, callFunc, curFunc, commonBlocks, funcCommonDeclared);
+    }
 }
 
 static void fillUsedVars(set<string>& usedVars, SgExpression* exp)
@@ -702,36 +741,43 @@ static void transferSave(map<FuncInfo*, set<FuncInfo*>>& funcAddedVarsFuncs, vec
     else if (funcAddedVarsFuncs[curFunc].count(startFunc))
         return;
 
+    std::vector<SgStatement*> ifaces;
+    ifaces.push_back(curFunc->funcPointer->GetOriginal());
+    findInterfaces(curFunc, ifaces);
+
     funcAddedVarsFuncs[curFunc].insert(startFunc);
     if (!curFunc->isMain)
     {
-        SgStatement* st = curFunc->funcPointer->GetOriginal();
-        for (auto& var : varsToTransfer)
+        for (int i = 0; i < ifaces.size(); i++)
         {
-            ((SgProcHedrStmt*)(st))->AddArg(*new SgVarRefExp(var->copy()));
-            st->lexNext()->deleteStmt();
-            if (curFunc != startFunc)
+            SgStatement* hedr = ifaces[i];
+            for (auto& var : varsToTransfer)
             {
-                vector<SgSymbol*> varVec = vector<SgSymbol*>();
-                varVec.push_back(var);
-                SgStatement* decl = makeDeclaration(NULL, varVec);
-                for (int i = 0; i < 3; i++)
+                ((SgProcHedrStmt*)(hedr))->AddArg(*new SgVarRefExp(var->copy()));
+                hedr->lexNext()->deleteStmt();
+                if (curFunc != startFunc || i!=0) 
                 {
-                    SgExpression* e;
-                    if (e = decl->expr(i))
-                        decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
-                }
-                SgStatement* firstExDec;
-                for (SgStatement* start = st->lexNext(), *end = st->lastNodeOfStmt(); start != end; start = start->lexNext())
-                {
-                    if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(st->fileName(), start->fileName())) {
-                        firstExDec = start;
-                        break;
+                    vector<SgSymbol*> varVec = vector<SgSymbol*>();
+                    varVec.push_back(var);
+                    SgStatement* decl = makeDeclaration(NULL, varVec);
+                    for (int i = 0; i < 3; i++)
+                    {
+                        SgExpression* e;
+                        if (e = decl->expr(i))
+                            decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
                     }
+                    SgStatement* firstExDec;
+                    for (SgStatement* start = hedr->lexNext(), *end = hedr->lastNodeOfStmt(); start != end; start = start->lexNext())
+                    {
+                        if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(hedr->fileName(), start->fileName())) {
+                            firstExDec = start;
+                            break;
+                        }
+                    }
+                    decl->setlineNumber(firstExDec->lineNumber());
+                    decl->setFileName(hedr->fileName());
+                    firstExDec->insertStmtBefore(*decl, *(hedr));
                 }
-                decl->setlineNumber(firstExDec->lineNumber());
-                decl->setFileName(st->fileName());
-                firstExDec->insertStmtBefore(*decl, *(st));
             }
         }
 
@@ -1191,63 +1237,74 @@ static void transferModule(map<FuncInfo*, set<SgSymbol*>>& funcAddedVarsMods, se
         }
     }
 
+    std::vector<SgStatement*> ifaces;
+    ifaces.push_back(curFunc->funcPointer->GetOriginal());
+    findInterfaces(curFunc, ifaces);
+
     if (allForChange.count(curFunc))
     {
-        for (auto& var : nextVarsToTransfer)
+        for (int i = 0; i < ifaces.size(); i++)
         {
-            curFunc->funcParams.identificators.push_back(var->identifier());
-            ((SgProcHedrStmt*)(st))->AddArg(*new SgVarRefExp(var->copy()));
-            st->lexNext()->deleteStmt();
-            vector<SgSymbol*> varVec = vector<SgSymbol*>();
-            varVec.push_back(var);
-            SgStatement* decl = makeDeclaration(NULL, varVec);
-
-            /*TODO:: add some other*/
-            if (var->attributes() && ALLOCATABLE_BIT)
+            SgStatement* hedr = ifaces[i];
+            for (auto& var : nextVarsToTransfer)
             {
-                bool isAuto = false;
-                if (decl->expr(0)->lhs()->variant() == ARRAY_REF && decl->expr(0)->lhs()->lhs())
+                if (i == 0)
                 {
-                    for (SgExpression* e = decl->expr(0)->lhs()->lhs(); e; e = e->rhs())
+                    curFunc->funcParams.identificators.push_back(var->identifier());
+                }               
+                ((SgProcHedrStmt*)(hedr))->AddArg(*new SgVarRefExp(var->copy()));
+                hedr->lexNext()->deleteStmt();
+                vector<SgSymbol*> varVec = vector<SgSymbol*>();
+                varVec.push_back(var);
+                SgStatement* decl = makeDeclaration(NULL, varVec);
+
+                /*TODO:: add some other*/
+                if (var->attributes() && ALLOCATABLE_BIT)
+                {
+                    bool isAuto = false;
+                    if (decl->expr(0)->lhs()->variant() == ARRAY_REF && decl->expr(0)->lhs()->lhs())
                     {
-                        if (e->lhs()->variant() == DDOT && (e->lhs()->rhs() || e->lhs()->lhs()) || e->lhs()->variant() != DDOT)
+                        for (SgExpression* e = decl->expr(0)->lhs()->lhs(); e; e = e->rhs())
                         {
-                            isAuto = true;
-                            break;
-                        }                        
+                            if (e->lhs()->variant() == DDOT && (e->lhs()->rhs() || e->lhs()->lhs()) || e->lhs()->variant() != DDOT)
+                            {
+                                isAuto = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!isAuto) {
+                        funcForInterfaceAdd.insert(curFunc);
+                        SgAttributeExp* a = new SgAttributeExp(ALLOCATABLE_OP);
+                        SgExprListExp* l = new SgExprListExp();
+                        l->setLhs(a);
+                        ((SgVarDeclStmt*)decl)->addAttributeExpression(a);
                     }
                 }
-                if (!isAuto) {
-                    funcForInterfaceAdd.insert(curFunc);
-                    SgAttributeExp* a = new SgAttributeExp(ALLOCATABLE_OP);
-                    SgExprListExp* l = new SgExprListExp();
-                    l->setLhs(a);
-                    ((SgVarDeclStmt*)decl)->addAttributeExpression(a);
-                }                
-            }
 
-            for (int i = 0; i < 3; i++)
-            {
-                SgExpression* e;
-                if (e = decl->expr(i))
+                for (int i = 0; i < 3; i++)
                 {
-                    decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
+                    SgExpression* e;
+                    if (e = decl->expr(i))
+                    {
+                        decl->setExpression(i, CalculateInteger(ReplaceConstant(e)));
+                    }
                 }
-            }
 
-            SgStatement* firstExDec;
-            for (SgStatement* start = st->lexNext(), *end = st->lastNodeOfStmt(); start != end; start = start->lexNext())
-            {
+                SgStatement* firstExDec;
+                for (SgStatement* start = hedr->lexNext(), *end = hedr->lastNodeOfStmt(); start != end; start = start->lexNext())
+                {
 
-                if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(st->fileName(), start->fileName())) {
-                    firstExDec = start;
-                    break;
+                    if ((isSgExecutableStatement(start) || isSgDeclarationStatement(start)) && !strcmp(hedr->fileName(), start->fileName())) {
+                        firstExDec = start;
+                        break;
+                    }
                 }
+                decl->setlineNumber(firstExDec->lineNumber());
+                decl->setFileName(hedr->fileName());
+                firstExDec->insertStmtBefore(*decl, *(hedr));
+
             }
-            decl->setlineNumber(firstExDec->lineNumber());
-            decl->setFileName(st->fileName());
-            firstExDec->insertStmtBefore(*decl, *(st));
-        
         }
 
         for (auto& callFunc : curFunc->callsTo)
